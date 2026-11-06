@@ -47,6 +47,17 @@ import WebKit
     model.target = "zh-CN"
     require(page.loads == requests + 1 && model.busy, "Visible popup must retranslate after language change")
     model.cancel(); model.setPopupVisible(false)
+    model.source = "auto"
+    for language in ["en", "fr", "ja"] {
+        model.translate(forceRefresh: true, googleSourceOverride: language)
+        let query = model.webURL.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems }
+        require(query?.first(where: { $0.name == "sl" })?.value == language, "Retry must use the chosen source language")
+        require(model.googleSourceOverride == language && model.source == "auto" && defaults.string(forKey: "source") == "auto")
+    }
+    model.accept("A different selection", origin: "test")
+    require(model.googleSourceOverride == nil && model.source == "auto", "The next selection must use the saved source setting")
+    model.cancel()
+    print("PASS one-request source override for English, French and Japanese")
     for _ in 0..<10 { model.refreshAvailableProviders() }
     try await Task.sleep(nanoseconds: 150_000_000)
     require(keyReads == 0, "Provider menu must not read secret values")
