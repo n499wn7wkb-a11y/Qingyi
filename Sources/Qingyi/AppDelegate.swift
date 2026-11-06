@@ -88,6 +88,8 @@ private func makeMenuBarIcon() -> NSImage {
         menu.delegate = self
         let settings = NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self; menu.addItem(settings)
+        let diagnostics = NSMenuItem(title: "打开诊断日志…", action: #selector(openDiagnostics), keyEquivalent: "")
+        diagnostics.target = self; menu.addItem(diagnostics)
         let quit = NSMenuItem(title: "退出轻译", action: #selector(quitApp), keyEquivalent: "q")
         quit.target = self; menu.addItem(quit)
         statusItem.menu = menu
@@ -325,5 +327,17 @@ private func makeMenuBarIcon() -> NSImage {
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { openSettings(); return true }
+    @objc private func openDiagnostics() {
+        let file = GoogleDiagnostics.file
+        if FileManager.default.fileExists(atPath: file.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([file])
+        } else {
+            let alert = NSAlert()
+            alert.messageText = "暂无 Google 翻译诊断日志"
+            alert.informativeText = "使用一次 Google 翻译后，再从菜单打开日志。"
+            alert.runModal()
+        }
+    }
+
     @objc private func quitApp() { NSApp.terminate(nil) }
 }

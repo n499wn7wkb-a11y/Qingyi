@@ -51,10 +51,16 @@ struct TranslationView: View {
     @ViewState<Bool> private var sideBySide = false
     @Environment(\.colorScheme) private var colorScheme
 
+    private var sourceLabel: String {
+        if let code = model.googleSourceOverride { return Language.name(for: code) + " · 本次指定" }
+        if model.source != "auto" { return Language.name(for: model.source) }
+        return model.detectedSource.map { Language.name(for: $0) + " · 自动检测" } ?? "自动检测"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(model.source == "auto" ? model.detectedSource.map { Language.name(for: $0) + " · 自动检测" } ?? "自动检测" : Language.name(for: model.source))
+                Text(sourceLabel)
                     .font(.system(size: 13, weight: .medium)).foregroundStyle(Color.primary.opacity(0.72))
                 Spacer()
                 Button(action: settings) { ToolbarLabel(systemImage: "gearshape") }
@@ -94,7 +100,20 @@ struct TranslationView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(error).font(.system(size: 13)).foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
                         if !AXIsProcessTrusted() && model.input.isEmpty { Button("打开设置", action: settings).buttonStyle(.bordered) }
-                        else if !model.input.isEmpty { Button("重试") { model.translate(forceRefresh: true) }.buttonStyle(.bordered) }
+                        else if !model.input.isEmpty {
+                            Button("重试") {
+                                model.translate(forceRefresh: true, googleSourceOverride: model.googleSourceOverride)
+                            }.buttonStyle(.bordered)
+                            if model.provider == .google, model.webURL != nil {
+                                Menu("指定原文语言重试") {
+                                    ForEach(Language.targets.filter { $0.id != model.target }) { language in
+                                        Button(language.name) {
+                                            model.translate(forceRefresh: true, googleSourceOverride: language.id)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 } else if model.busy && !model.previewOutput.isEmpty {
                     Text(model.previewOutput).font(.system(size: 18, weight: .medium)).foregroundStyle(translationBlue)

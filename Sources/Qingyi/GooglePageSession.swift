@@ -2,6 +2,41 @@ import AppKit
 import WebKit
 import TranslationCore
 
+enum GoogleDiagnostics {
+    static let file = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Logs/Qingyi/google-translation.log")
+    private static let queue = DispatchQueue(label: "com.qingyi.google-diagnostics")
+    private static let maxBytes: UInt64 = 256 * 1024
+
+    // Callers supply only diagnostic states and metadata, never webpage text or URLs.
+    static func append(_ event: String) {
+        let time = Date()
+        queue.async {
+            do {
+                let manager = FileManager.default
+                try manager.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+                let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "test"
+                let line = Data("\(ISO8601DateFormatter().string(from: time)) v\(version) \(event)\n".utf8)
+                let size = (try? manager.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.uint64Value
+                if let size, size + UInt64(line.count) <= maxBytes {
+                    let handle = try FileHandle(forWritingTo: file)
+                    defer { try? handle.close() }
+                    try handle.seekToEnd()
+                    try handle.write(contentsOf: line)
+                } else {
+                    try line.write(to: file, options: .atomic)
+                }
+            } catch {
+                // A logging failure must not interfere with translation.
+            }
+        }
+    }
+
+    static func languageCode(_ code: String) -> String {
+        code.range(of: #"^[A-Za-z]{2,8}(-[A-Za-z0-9]{2,8}){0,2}$"#, options: .regularExpression) != nil ? code : "other"
+    }
+}
+
 @MainActor final class GooglePageSession: NSObject, WKNavigationDelegate {
     private weak var model: AppModel?
     private var page: WKWebView?
@@ -14,6 +49,7 @@ import TranslationCore
     private var releaseTask: Task<Void, Never>?
     private var poller: Task<Void, Never>?
     private var activeID: UUID?
+    private var requestStart: TimeInterval = 0
     private var text = ""
     private var url: URL?
     private var requestedLanguages = ""
@@ -59,6 +95,7 @@ import TranslationCore
         page = nil; navigation = nil; ready = false; last = nil; idleSince = nil
     }
     func cancelRequest() {
+        if let id = activeID { log(id, "cancelled") }
         let pending = activeID != nil
         activeID = nil; poller?.cancel(); poller = nil
         if pending { page?.stopLoading(); ready = false }
@@ -81,6 +118,10 @@ import TranslationCore
         if let renderHost { renderHost.addSubview(view); view.frame = NSRect(x: 0, y: 0, width: 840, height: 620) }
         return view
     }
+    private func log(_ id: UUID, _ event: String) {
+        let milliseconds = Int((ProcessInfo.processInfo.systemUptime - requestStart) * 1000)
+        GoogleDiagnostics.append("request=\(id.uuidString.prefix(8)) elapsed_ms=\(milliseconds) \(event)")
+    }
     private func current(_ id: UUID) -> Bool {
         activeID == id && model?.webRequestID == id && model?.provider == .google
     }
@@ -89,6 +130,9 @@ import TranslationCore
         // Textareas normalize CRLF/CR line endings; compare the same representation.
         let expectedText = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
         activeID = requestID; self.text = expectedText; self.url = url; requestedLanguages = source + "\u{0}" + target
+        requestStart = ProcessInfo.processInfo.systemUptime
+        let sourceSetting = model?.googleSourceOverride != nil ? "override" : (model?.source == "auto" ? "auto" : "manual")
+        log(requestID, "start source_setting=\(sourceSetting) source=\(GoogleDiagnostics.languageCode(source)) target=\(GoogleDiagnostics.languageCode(target)) characters=\(expectedText.unicodeScalars.count) retry=\(forceRefresh)")
         guard let data = try? JSONSerialization.data(withJSONObject: [expectedText]),
               let encoded = String(data: data, encoding: .utf8) else {
             fail("无法准备翻译文本，请重试。", id: requestID); return
@@ -97,6 +141,7 @@ import TranslationCore
         let view = getPage()
         oldOutput = last?.result ?? ""; reused = ready && languages == requestedLanguages; inputConfirmed = false
         if forceRefresh || !reused { load(view, id: requestID); return }
+        log(requestID, "reuse_page")
         let previous = last
         poller = Task { @MainActor [weak self, weak view] in
             guard let self, let view else { return }
@@ -153,6 +198,7 @@ import TranslationCore
             navigationURL = shortURL
         }
         inputConfirmed = !injectAfterLoad
+        log(id, "navigate injection=\(injectAfterLoad)")
         view.stopLoading(); navigation = view.load(URLRequest(url: navigationURL))
     }
     func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
@@ -169,6 +215,7 @@ import TranslationCore
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard navigation === self.navigation else { return }
         navigationFinished = true
+        if let id = activeID { log(id, "navigation_finished") }
         if poller == nil, let id = activeID { poll(webView, id: id) }
     }
     private func poll(_ view: WKWebView, id: UUID) {
@@ -176,6 +223,8 @@ import TranslationCore
         poller = Task { @MainActor [weak self, weak view] in
             var stability = GoogleResultStability(); let start = Date(); var modeAttempts = 0; var readyObservations = 0
             var timeoutMessage = "Google 翻译页面未能就绪，请检查网络后重试。"
+            var previousState = ""
+            var lastModeAction = ""
             for attempt in 0..<150 {
                 guard !Task.isCancelled, let self, let view, self.current(id) else { return }
                 if let data = try? await view.evaluateJavaScript(Self.snapshot) as? [String:Any] {
@@ -183,6 +232,12 @@ import TranslationCore
                     let mode = data["mode"] as? String ?? "", output = data["text"] as? String ?? ""
                     let source = data["source"] as? String ?? "", loading = data["loading"] as? Bool ?? true
                     let matching = source == self.text
+                    let safeMode = ["Advanced", "Classic"].contains(mode) ? mode : (mode.isEmpty ? "missing" : "other")
+                    let state = "mode=\(safeMode) document_ready=\(data["documentReady"] as? Bool == true) input_field=\(data["hasInput"] as? Bool == true) input_matches=\(matching) result_present=\(!output.isEmpty) loading=\(loading)"
+                    if state != previousState {
+                        self.log(id, state)
+                        previousState = state
+                    }
                     if self.navigationFinished && data["documentReady"] as? Bool == true && data["hasInput"] as? Bool == true {
                         if mode.isEmpty {
                             timeoutMessage = "Google 页面未提供 Advanced 模式，请重试。"
@@ -205,6 +260,7 @@ import TranslationCore
                             guard self.injectionAttempts < 3 else { self.fail("Google 页面未能保留输入文字，请重试。", id:id); return }
                             self.oldOutput = output
                             self.injectionAttempts += 1; self.lastInjection = Date()
+                            self.log(id, "inject attempt=\(self.injectionAttempts)")
                             _ = try? await view.evaluateJavaScript(self.inputScript)
                             guard !Task.isCancelled, self.current(id) else { return }
                         }
@@ -212,6 +268,11 @@ import TranslationCore
                     if mode == "Classic", attempt >= 5, modeAttempts < 3 {
                         let changed = (try? await view.evaluateJavaScript(Self.selectAdvanced)) as? String ?? "unavailable"
                         guard !Task.isCancelled, self.current(id) else { return }
+                        let action = ["opening", "requested", "selected"].contains(changed) ? changed : "unavailable"
+                        if action != lastModeAction || action == "requested" {
+                            self.log(id, "advanced_switch=\(action)")
+                            lastModeAction = action
+                        }
                         if changed == "requested" { modeAttempts += 1; stability = GoogleResultStability() }
                         // Opening a native page menu and choosing the option occur
                         // in separate DOM turns; never accept Classic output.
@@ -251,11 +312,13 @@ import TranslationCore
     """
     private func complete(_ result: String, id: UUID) {
         guard current(id), let model else { return }
+        log(id, "completed")
         last = (text, requestedLanguages, result); ready = true; languages = requestedLanguages
         model.output = result; model.previewOutput = ""; model.busy = false; activeID = nil; poller = nil; scheduleRelease()
     }
     private func fail(_ message: String, id: UUID) {
         guard current(id), let model else { return }
+        log(id, "failed \(message)")
         model.error = message; model.previewOutput = ""; model.busy = false; activeID = nil
         poller?.cancel(); poller = nil; ready = false; scheduleRelease()
     }
@@ -263,6 +326,7 @@ import TranslationCore
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { failed(navigation, error:error) }
     private func failed(_ navigation: WKNavigation?, error: Error) {
         guard navigation === self.navigation, (error as NSError).code != NSURLErrorCancelled, let id = activeID else { return }
+        log(id, "navigation_error_code=\((error as NSError).code)")
         fail("无法连接 Google 翻译，请检查网络后重试。", id:id)
     }
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {

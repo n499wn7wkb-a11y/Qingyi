@@ -32,6 +32,7 @@ import NaturalLanguage
     @Published var busy = false
     @Published var error: String?
     @Published var detectedSource: String?
+    @Published private(set) var googleSourceOverride: String?
     @Published var hotkeyWarning: String?
     @Published var origin = "手动输入"
     @Published private(set) var shortcut: SelectionShortcut
@@ -170,9 +171,9 @@ import NaturalLanguage
     private func invalidate() {
         generation = UUID(); webRequestID = UUID(); task?.cancel(); task = nil
         googlePageSession.cancelRequest()
-        busy = false; output = ""; previewOutput = ""; error = nil; detectedSource = nil
+        busy = false; output = ""; previewOutput = ""; error = nil; detectedSource = nil; googleSourceOverride = nil
     }
-    func translate(forceRefresh: Bool = false) {
+    func translate(forceRefresh: Bool = false, googleSourceOverride: String? = nil) {
         invalidate(); webURL = nil
         guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { error = TranslationError.emptyInput.localizedDescription; return }
         guard input.unicodeScalars.count <= 5_000 else { error = TranslationError.tooLong.localizedDescription; return }
@@ -200,7 +201,11 @@ import NaturalLanguage
         func encode(_ s: String) -> String { s.addingPercentEncoding(withAllowedCharacters: allowed) ?? "" }
         var parts = URLComponents(string: "https://translate.google.com/")!
         let googleSource: String
-        if source == "auto", let recognized = NLLanguageRecognizer.dominantLanguage(for: input)?.rawValue {
+        if let googleSourceOverride, googleSourceOverride != target,
+           Language.targets.contains(where: { $0.id == googleSourceOverride }) {
+            self.googleSourceOverride = googleSourceOverride
+            googleSource = googleSourceOverride
+        } else if source == "auto", let recognized = NLLanguageRecognizer.dominantLanguage(for: input)?.rawValue {
             googleSource = recognized == "zh-Hans" ? "zh-CN" : (recognized == "zh-Hant" ? "zh-TW" : recognized)
             detectedSource = googleSource
         } else { googleSource = source }
