@@ -1,6 +1,6 @@
 # 轻译 Qingyi
 
-轻译是一款 macOS 划词翻译工具。读英文网页或其他外语资料时，选中文字，按快捷键就能在原文附近看译文。想留着复习的内容，可以存进 Apple 备忘录。
+轻译是一款采用 Liquid Glass（液态玻璃）设计的原生 macOS 划词翻译工具。选中文字，按快捷键就能在原文旁看译文，也可以把译文存进 Apple 备忘录。
 
 **[下载轻译 2.4.8](https://github.com/n499wn7wkb-a11y/Qingyi/releases/tag/2.4.8)** · 需要 macOS 26 或更新版本
 
