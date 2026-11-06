@@ -1,4 +1,6 @@
-# 轻译 Qingyi
+# 轻译 Glossa
+
+*Translate as you read.*
 
 轻译是一款采用 Liquid Glass（液态玻璃）设计的原生 macOS 划词翻译工具。选中文字，按快捷键就能在原文旁看译文，也可以把译文存进 Apple 备忘录。
 
